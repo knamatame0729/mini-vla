@@ -14,12 +14,12 @@ class ImageEncoderTinyCNN(nn.Module):
         self.ln = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = x.mean(dim=[2, 3])  # GAP
-        x = self.proj(x)
-        x = self.ln(x)
+        x = F.relu(self.conv1(x))     # (B, 32, 32, 32)
+        x = F.relu(self.conv2(x))     # (B, 64, 16, 16)
+        x = F.relu(self.conv3(x))     # (B, 128, 8, 8)
+        x = x.mean(dim=[2, 3])        # Global average pooling -> (B, 128)
+        x = self.proj(x)              # (B, d_model)
+        x = self.ln(x)                # Layer Normalization
         return x  # (B, d_model)
 
 

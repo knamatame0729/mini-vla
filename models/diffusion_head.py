@@ -23,9 +23,9 @@ def make_beta_schedule(cfg: DiffusionConfig):
     param cfg: A DiffusionConfig object containing the diffusion hyperparameters.
     return: A tuple of tensors containing the beta values, alpha values and alpha bar values.
     """
-    betas = torch.linspace(cfg.beta_start, cfg.beta_end, cfg.T)
+    betas = torch.linspace(cfg.beta_start, cfg.beta_end, cfg.T)  # As t increases, beta_t becomes larger, so later steps have more noise
     alphas = 1.0 - betas
-    alpha_bar = torch.cumprod(alphas, dim=0)
+    alpha_bar = torch.cumprod(alphas, dim=0)                     # As t increases, alpha_bar[t] decreases and x_t becomes noisier
     return betas, alphas, alpha_bar
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -67,6 +67,7 @@ class ActionDenoiseModel(nn.Module):
         self.cfg = cfg
         self.time_emb = SinusoidalTimeEmbedding(time_emb_dim)
 
+        # Input dimension is action_dim + time_emb_dim + cond_dim (4 + 32 + 128)
         in_dim = cfg.action_dim + time_emb_dim + cfg.cond_dim
 
         self.net = nn.Sequential(
@@ -79,12 +80,17 @@ class ActionDenoiseModel(nn.Module):
 
     def forward(self, x_t, t, cond):
         """
-        x_t: (B, action_dim)
+        x_t: (B, action_dim) noisy actions at timestep t
         t:   (B,)
-        cond: (B, cond_dim)
+        cond: (B, cond_dim) fused VLA token
+        returns: (B, action_dim) predicted noise
         """
         t_emb = self.time_emb(t)  # (B, time_emb_dim)
-        x = torch.cat([x_t, t_emb, cond], dim=-1)
+
+        # Concatenate x_t, t_emb, and cond
+        x = torch.cat([x_t, t_emb, cond], dim=-1)  # (B, in_dim)
+
+        # MLP to predict noise
         eps_pred = self.net(x)
         return eps_pred
 
@@ -102,11 +108,15 @@ class DiffusionPolicyHead(nn.Module):
     def q_sample(self, x0, t, noise):
         """
         Forward diffusion: x_t = sqrt(alpha_bar_t)*x0 + sqrt(1-alpha_bar_t)*noise
-        x0: (B, action_dim)
-        t:  (B,) integer
+        x0: (B, action_dim) ground-truth actions
+        t:  (B,) Timestep for each example in the batch
+        noise: (B, action_dim) sampled noise
+        returns: x_t (B, action_dim)
         """
         # gather alpha_bar_t for each t in batch
         alpha_bar_t = self.alpha_bar[t].unsqueeze(-1)  # (B, 1)
+
+        # x_t = √(ᾱ_t) * x_0 + √(1 - ᾱ_t) * ε
         return torch.sqrt(alpha_bar_t) * x0 + torch.sqrt(1 - alpha_bar_t) * noise
 
     def loss(self, actions, cond):
@@ -116,11 +126,34 @@ class DiffusionPolicyHead(nn.Module):
         """
         B = actions.size(0)
         device = actions.device
+
+        # Sample t uniformly for each example in the batch
         t = torch.randint(0, self.cfg.T, (B,), device=device) # uniform sampling t
-        noise = torch.randn_like(actions)
-        x_t = self.q_sample(actions, t, noise)  # noisy actions
+
+        # Sample noise
+        noise = torch.randn_like(actions)           # (B, action_dim)
+
+        # Forward diffusion
+        x_t = self.q_sample(actions, t, noise)      # noisy actions
+
+        # Predict the noise
         eps_pred = self.denoise_model(x_t, t, cond)
-        return F.mse_loss(eps_pred, noise)
+
+        # Main Loss
+        main_loss = F.mse_loss(eps_pred, noise)
+        
+        # Loss per timestep
+        loss_per_t = F.mse_loss(eps_pred, noise, reduction='none').mean(dim=-1)  # (B,)
+
+        # Collect loss per timestep for logging
+        loss_dict = {}
+        for t_val in range(self.cfg.T):
+            mask = (t == t_val)
+            if mask.any():
+                loss_dict[f"loss_t{t_val}"] = loss_per_t[mask].mean().item()
+
+        # Compute MSE loss between the true noise and predicted noise
+        return main_loss, loss_dict
 
     @torch.no_grad()
     def sample(self, cond, n_samples=None):
@@ -135,10 +168,19 @@ class DiffusionPolicyHead(nn.Module):
             B = n_samples
             cond = cond.expand(B, -1)
 
+        # Start from pure noise (action_dim)
         x_t = torch.randn(B, self.cfg.action_dim, device=cond.device)
-        for t_step in reversed(range(self.cfg.T)):
+        
+        # Reverse Loop
+        for t_step in reversed(range(self.cfg.T)):  # 15, 14, ..., 0
+
+            # Create timestep tensor
             t = torch.full((B,), t_step, device=cond.device, dtype=torch.long)
+
+            # Predict noise
             eps_pred = self.denoise_model(x_t, t, cond)
+
+            # Get parameters for current timestep
             beta_t = self.betas[t_step]
             alpha_t = self.alphas[t_step]
             alpha_bar_t = self.alpha_bar[t_step]

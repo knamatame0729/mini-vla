@@ -8,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from models.vla_diffusion_policy import VLADiffusionPolicy
 
+import wandb
 
 class TrainingDataset(Dataset):
     def __init__(self, path, resize_to=64):
@@ -80,24 +81,44 @@ def main():
 
     num_epochs = args.epochs
 
+    wandb.init(project="mini-vla", config=args)
+
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
-        for img, state, action, text_ids in loader:
+        epoch_losses = []
+
+        for batch_idx, (img, state, action, text_ids) in enumerate(loader):
             img = img.to(device)
             state = state.to(device)
             action = action.to(device)
             text_ids = text_ids.to(device)
 
-            loss = model.loss(img, text_ids, state, action)
+            # Forward pass
+            loss, loss_dict = model.loss(img, text_ids, state, action)
 
+            # Backward pass
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
             total_loss += loss.item() * img.size(0)
+            epoch_losses.append(loss.item())
+
+            wandb.log(({
+                "batch_loss": loss.item(),
+                "epoch": epoch + 1,
+                "batch": batch_idx
+            }))
 
         avg_loss = total_loss / len(dataset)
         print(f"Epoch {epoch+1}/{num_epochs}  loss={avg_loss:.4f}")
+
+        wandb.log({
+            "epoch_loss": avg_loss,
+            "epoch_loss_std": np.std(epoch_losses),
+            "learning_rate": optimizer.param_groups[0]['lr'],
+        })
 
     torch.save(
         {
