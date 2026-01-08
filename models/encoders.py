@@ -23,6 +23,49 @@ class ImageEncoderTinyCNN(nn.Module):
         return x  # (B, d_model)
 
 
+class TextEncoderTransformer(nn.Module):
+    def __init__(self, vocab_size, d_word=64, d_model=128, num_layers=2, num_heads=4, dim_feedforward=256):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, d_word)
+        self.pos_embed = nn.Parameter(torch.randn(1, 512, d_word))  # Support up to 512 tokens
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_word,
+            nhead=num_heads,
+            dim_feedforward=dim_feedforward,
+            batch_first=True,
+            dropout=0.1
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Project to d_model
+        self.proj = nn.Linear(d_word, d_model)
+        self.ln = nn.LayerNorm(d_model)
+
+    def forward(self, token_ids, attention_mask=None):
+        # token_ids: (B, T)
+        x = self.embed(token_ids)  # (B, T, d_word)
+        
+        # Add positional embeddings
+        seq_len = x.size(1)
+        x = x + self.pos_embed[:, :seq_len, :]
+        
+        # Apply transformer
+        if attention_mask is not None:
+            x = self.transformer(x, src_key_padding_mask=attention_mask)
+        else:
+            x = self.transformer(x)
+        
+        # Global average pooling
+        x = x.mean(dim=1)  # (B, d_word)
+        
+        # Project and normalize
+        x = self.proj(x)  # (B, d_model)
+        x = self.ln(x)
+        return x
+
+
 class TextEncoderTinyGRU(nn.Module):
     def __init__(self, vocab_size, d_word=64, d_model=128):
         super().__init__()
