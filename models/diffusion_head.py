@@ -54,7 +54,7 @@ class SinusoidalTimeEmbedding(nn.Module):
         if self.dim % 2 == 1:
             emb = torch.cat([emb, torch.zeros_like(emb[..., :1])], dim=-1)
         return emb
-
+    
 class FiLMLayer(nn.Module):
     """
     Feature-wise Linear Modulation (FiLM) layer.
