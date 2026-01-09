@@ -1,18 +1,20 @@
 """VLA Diffusion Policy Model."""
 
 import torch.nn as nn
-from .encoders import ImageEncoderTinyCNN, TextEncoderTransformer, StateEncoderMLP
+#from .encoders import ImageEncoderTinyCNN, TextEncoderTransformer, StateEncoderMLP
+from .encoders import ImageEncoderTinyCNN, TextEncoderTinyGRU, StateEncoderMLP
 from .fusion import FusionMLP
 from .diffusion_head import DiffusionConfig, DiffusionPolicyHead
 
 
 class VLADiffusionPolicy(nn.Module):
     def __init__(self, vocab_size, state_dim, action_dim,
-                 d_model=128, diffusion_T=16, num_text_layers=2, num_heads=4):
+                 d_model=128, diffusion_T=16):
         super().__init__()
         self.img_encoder = ImageEncoderTinyCNN(d_model=d_model)
-        self.txt_encoder = TextEncoderTransformer(vocab_size=vocab_size, d_word=64, d_model=d_model, 
-                                                  num_layers=num_text_layers, num_heads=num_heads)
+        #self.txt_encoder = TextEncoderTransformer(vocab_size=vocab_size, d_word=64, d_model=d_model, 
+        #                                          num_layers=num_text_layers, num_heads=num_heads)
+        self.txt_encoder = TextEncoderTinyGRU(vocab_size=vocab_size, d_word=64, d_model=d_model)
         self.state_encoder = StateEncoderMLP(state_dim=state_dim, d_model=d_model)
         self.fusion = FusionMLP(d_model=d_model)
 

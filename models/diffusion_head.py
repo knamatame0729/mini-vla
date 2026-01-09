@@ -55,6 +55,33 @@ class SinusoidalTimeEmbedding(nn.Module):
             emb = torch.cat([emb, torch.zeros_like(emb[..., :1])], dim=-1)
         return emb
 
+class FiLMLayer(nn.Module):
+    """
+    Feature-wise Linear Modulation (FiLM) layer.
+    Learns to modulate features with affine transformations based on conditioning.
+    """
+    def __init__(self, cond_dim: int, feat_dim: int, hidden_dim: int = 128):
+        super().__init__()
+        # Generate gamma (multiplicative) and beta (additive) from conditioning
+        self.mlp = nn.Sequential(
+            nn.Linear(cond_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, feat_dim * 2),  # *2 for gamma and beta
+        )
+    
+    def forward(self, x, cond):
+        """
+        x: (B, feat_dim) features to be modulated
+        cond: (B, cond_dim) conditioning vector
+        returns: (B, feat_dim) modulated features
+        """
+        params = self.mlp(cond)  # (B, feat_dim * 2)
+        gamma, beta = torch.split(params, params.size(-1) // 2, dim=-1)  # (B, feat_dim) each
+        
+        # FiLM: y = gamma * x + beta
+        return gamma * x + beta
+
+
 class ActionDenoiseModel(nn.Module):
     """
     epsilon_theta(x_t, t, cond)
@@ -77,6 +104,9 @@ class ActionDenoiseModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, cfg.action_dim),
         )
+        
+        # FiLM layer to modulate the action output
+        self.film = FiLMLayer(cond_dim=cfg.cond_dim, feat_dim=cfg.action_dim, hidden_dim=hidden_dim)
 
     def forward(self, x_t, t, cond):
         """
@@ -91,7 +121,11 @@ class ActionDenoiseModel(nn.Module):
         x = torch.cat([x_t, t_emb, cond], dim=-1)  # (B, in_dim)
 
         # MLP to predict noise
-        eps_pred = self.net(x)
+        eps_pred = self.net(x)  # (B, action_dim)
+        
+        # Apply FiLM modulation to the output
+        eps_pred = self.film(eps_pred, cond)  # (B, action_dim)
+        
         return eps_pred
 
 class DiffusionPolicyHead(nn.Module):

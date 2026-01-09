@@ -51,10 +51,10 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--d-model", type=int, default=128)
     parser.add_argument("--diffusion-T", type=int, default=16)
-    parser.add_argument("--num-text-layers", type=int, default=2,
-                        help="Number of Transformer layers for text encoder")
-    parser.add_argument("--num-heads", type=int, default=4,
-                        help="Number of attention heads in Transformer")
+    #parser.add_argument("--num-text-layers", type=int, default=2,
+    #                    help="Number of Transformer layers for text encoder")
+    #parser.add_argument("--num-heads", type=int, default=4,
+    #                    help="Number of attention heads in Transformer")
     parser.add_argument("--save-path", type=str,
                         default="checkpoints/model.pt")
     parser.add_argument("--device", type=str, default="cuda",
@@ -77,9 +77,9 @@ def main():
         state_dim=state_dim,
         action_dim=action_dim,
         d_model=args.d_model,
-        diffusion_T=args.diffusion_T,
-        num_text_layers=args.num_text_layers,
-        num_heads=args.num_heads
+        diffusion_T=args.diffusion_T
+        #num_text_layers=args.num_text_layers,
+        #num_heads=args.num_heads
     ).to(device)
 
     # Calculate and print model parameter size
