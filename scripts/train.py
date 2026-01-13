@@ -112,12 +112,46 @@ def main():
 
     num_epochs = args.epochs
 
-    wandb.init(project="mini-vla", config=args)
+    # Initialize W&B with comprehensive config
+    wandb.init(
+        project="mini-vla",
+        config={
+            "dataset_path": args.dataset_path,
+            "batch_size": args.batch_size,
+            "epochs": args.epochs,
+            "learning_rate": args.lr,
+            "d_model": args.d_model,
+            "diffusion_T": args.diffusion_T,
+            "resize_to": args.resize_to,
+            "optimizer": "Adam",
+            "vocab_size": vocab_size,
+            "state_dim": state_dim,
+            "action_dim": action_dim,
+            "dataset_size": len(dataset),
+            "num_batches_per_epoch": len(loader),
+        }
+    )
+
+    # Log model architecture
+    wandb.log({
+        "model/total_parameters": total_params,
+        "model/trainable_parameters": trainable_params,
+        "model/size_MB": total_params * 4 / (1024**2),
+        "model/img_encoder_params": img_encoder_params,
+        "model/txt_encoder_params": txt_encoder_params,
+        "model/state_encoder_params": state_encoder_params,
+        "model/fusion_params": fusion_params,
+        "model/diffusion_head_params": diffusion_params,
+    })
+
+    best_loss = float('inf')
+    loss_history = []
 
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0.0
         epoch_losses = []
+        epoch_loss_dict = {f"loss_t{t}": [] for t in range(args.diffusion_T)}
 
         for batch_idx, (img, state, action, text_ids) in enumerate(loader):
             img = img.to(device)
@@ -136,24 +170,82 @@ def main():
             total_loss += loss.item() * img.size(0)
             epoch_losses.append(loss.item())
 
-            wandb.log(({
-                "batch_loss": loss.item(),
-                "epoch": epoch + 1,
-                "batch": batch_idx
-            }))
+            # Collect per-timestep losses
+            for t_key, t_loss in loss_dict.items():
+                epoch_loss_dict[t_key].append(t_loss)
+
+            # Log batch metrics
+            log_dict = {
+                "train/batch_loss": loss.item(),
+                "train/epoch": epoch + 1,
+                "train/batch": batch_idx,
+                "train/global_step": epoch * len(loader) + batch_idx,
+                "train/learning_rate": optimizer.param_groups[0]['lr'],
+            }
+
+            # Log per-timestep losses for current batch
+            for t_key, t_loss in loss_dict.items():
+                log_dict[f"train/{t_key}"] = t_loss
+
+            wandb.log(log_dict)
 
         avg_loss = total_loss / len(dataset)
+        loss_history.append(avg_loss)
+        
+        # Compute statistics for epoch loss distribution
+        epoch_losses_array = np.array(epoch_losses)
+        
+        # Average per-timestep losses for epoch
+        avg_per_t_losses = {}
+        for t_key in epoch_loss_dict:
+            if epoch_loss_dict[t_key]:
+                avg_per_t_losses[f"epoch_{t_key}"] = np.mean(epoch_loss_dict[t_key])
+
         print(f"Epoch {epoch+1}/{num_epochs}  loss={avg_loss:.4f}")
 
-        wandb.log({
-            "epoch_loss": avg_loss,
-            "epoch_loss_std": np.std(epoch_losses),
-            "learning_rate": optimizer.param_groups[0]['lr'],
-        })
+        # Log epoch metrics
+        epoch_log_dict = {
+            "train/epoch_loss": avg_loss,
+            "train/epoch_loss_std": float(np.std(epoch_losses)),
+            "train/epoch_loss_min": float(np.min(epoch_losses)),
+            "train/epoch_loss_max": float(np.max(epoch_losses)),
+            "train/learning_rate": optimizer.param_groups[0]['lr'],
+        }
+        
+        # Add per-timestep averages
+        epoch_log_dict.update(avg_per_t_losses)
 
+        # Track best loss
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            epoch_log_dict["train/best_loss"] = best_loss
+            epoch_log_dict["train/best_loss_epoch"] = epoch + 1
+
+        wandb.log(epoch_log_dict)
+
+        # Save checkpoint
+        checkpoint_path = args.save_path.replace('.pt', f'_epoch{epoch+1}.pt')
+        torch.save(
+            {
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "epoch": epoch + 1,
+                "loss": avg_loss,
+                "vocab": dataset.vocab,
+                "state_dim": state_dim,
+                "action_dim": action_dim,
+                "d_model": args.d_model,
+                "diffusion_T": args.diffusion_T,
+            },
+            checkpoint_path,
+        )
+
+    # Save final model
     torch.save(
         {
             "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "final_loss": avg_loss,
             "vocab": dataset.vocab,
             "state_dim": state_dim,
             "action_dim": action_dim,
@@ -163,6 +255,16 @@ def main():
         args.save_path,
     )
     print("Saved checkpoint:", args.save_path)
+
+    # Log final metrics
+    wandb.log({
+        "train/final_loss": avg_loss,
+        "train/best_loss": best_loss,
+        "train/total_epochs": num_epochs,
+    })
+
+    # Close W&B run
+    wandb.finish()
 
 
 if __name__ == "__main__":

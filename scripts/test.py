@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import torch
 import imageio.v2 as imageio
+import wandb
 
 from envs.metaworld_env import MetaWorldMT1Wrapper
 from models.vla_diffusion_policy import VLADiffusionPolicy
@@ -103,6 +104,21 @@ def main():
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
+    # Initialize W&B for evaluation
+    wandb.init(
+        project="mini-vla",
+        job_type="evaluation",
+        config={
+            "checkpoint": args.checkpoint,
+            "env_name": args.env_name,
+            "seed": args.seed,
+            "episodes": args.episodes,
+            "max_steps": args.max_steps,
+            "instruction": args.instruction,
+        },
+        tags=["evaluation", args.env_name],
+    )
+
     # load model + tokenizer
     print(f"[test] Loading checkpoint from {args.checkpoint}")
     model, tokenizer = load_model_and_tokenizer(args.checkpoint, device)
@@ -126,6 +142,9 @@ def main():
         os.makedirs(args.video_dir, exist_ok=True)
 
     # evaluation
+    episode_rewards = []
+    episode_steps = []
+
     for ep in range(args.episodes):
         img, state, info = env.reset()
         step = 0
@@ -153,17 +172,47 @@ def main():
 
             frames.append(img.copy())
 
+        episode_rewards.append(ep_reward)
+        episode_steps.append(step)
+
         print(f"[test] Episode {ep+1}/{args.episodes}: reward={ep_reward:.3f}, steps={step}")
 
-        # save video
+        # Log episode metrics to W&B
+        wandb.log({
+            "eval/episode_reward": ep_reward,
+            "eval/episode_steps": step,
+            "eval/episode": ep + 1,
+        })
+
+        # save video and log to W&B
         if args.save_video:
             video_path = os.path.join(args.video_dir, f"{args.env_name}_ep{ep+1:03d}.mp4")
             with imageio.get_writer(video_path, fps=20) as writer:
                 for f in frames:
                     writer.append_data(f)
             print(f"[test] Saved video to {video_path}")
+            
+            # Log video to W&B
+            wandb.log({
+                f"eval/video_ep{ep+1}": wandb.Video(video_path, fps=20, format="mp4"),
+            })
+
+    # Log summary statistics
+    episode_rewards_array = np.array(episode_rewards)
+    episode_steps_array = np.array(episode_steps)
+
+    wandb.log({
+        "eval/mean_reward": float(np.mean(episode_rewards_array)),
+        "eval/std_reward": float(np.std(episode_rewards_array)),
+        "eval/min_reward": float(np.min(episode_rewards_array)),
+        "eval/max_reward": float(np.max(episode_rewards_array)),
+        "eval/mean_steps": float(np.mean(episode_steps_array)),
+        "eval/std_steps": float(np.std(episode_steps_array)),
+        "eval/total_episodes": args.episodes,
+    })
 
     env.close()
+    wandb.finish()
     print("[test] Done.")
 
 

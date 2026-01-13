@@ -168,7 +168,7 @@ class DiffusionPolicyHead(nn.Module):
         noise = torch.randn_like(actions)           # (B, action_dim)
 
         # Forward diffusion
-        x_t = self.q_sample(actions, t, noise)      # noisy actions
+        x_t = self.q_sample(actions, t, noise)      # noisy actions at timestep t
 
         # Predict the noise
         eps_pred = self.denoise_model(x_t, t, cond)
