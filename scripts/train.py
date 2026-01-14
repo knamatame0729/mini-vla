@@ -11,6 +11,14 @@ from models.vla_diffusion_policy import VLADiffusionPolicy
 import wandb
 
 class TrainingDataset(Dataset):
+    """Dataset for VLA
+    
+    Loads multi-modal data:
+    - images: robot camera observations
+    - states: joint positions, gripper state, etc.
+    - actions: robot actions (delta end-effector pose, gripper command)
+    - text_ids: tokenized language instructions
+    """
     def __init__(self, path, resize_to=64):
         data = np.load(path, allow_pickle=True)
         self.images = data["images"]             # (N, H, W, 3)
@@ -30,6 +38,7 @@ class TrainingDataset(Dataset):
         return self.images.shape[0]
 
     def __getitem__(self, idx):
+        # Load and preprocess image: resize and normalize to [0, 1]
         img = self.images[idx]  # (H, W, 3), uint8
         if self.cv2 is not None and (img.shape[0] != self.resize_to or img.shape[1] != self.resize_to):
             img = self.cv2.resize(img, (self.resize_to, self.resize_to))
@@ -51,10 +60,6 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--d-model", type=int, default=128)
     parser.add_argument("--diffusion-T", type=int, default=16)
-    #parser.add_argument("--num-text-layers", type=int, default=2,
-    #                    help="Number of Transformer layers for text encoder")
-    #parser.add_argument("--num-heads", type=int, default=4,
-    #                    help="Number of attention heads in Transformer")
     parser.add_argument("--save-path", type=str,
                         default="checkpoints/model.pt")
     parser.add_argument("--device", type=str, default="cuda",
@@ -66,53 +71,33 @@ def main():
     args = parse_args()
     os.makedirs(os.path.dirname(args.save_path), exist_ok=True)
 
+    # Setup device and load dataset
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     dataset = TrainingDataset(args.dataset_path, resize_to=args.resize_to)
+    
+    # Infer model dimensions from dataset
     vocab_size = max(dataset.vocab.values()) + 1
     state_dim = dataset.states.shape[1]
     action_dim = dataset.actions.shape[1]
 
+    # Initialize VLA model with diffusion policy head
+    # Architecture: Image Encoder + Text Encoder + State Encoder + Fusion MLP + Diffusion Head
+    # The diffusion head includes a FiLM layer for conditioning action generation
     model = VLADiffusionPolicy(
         vocab_size=vocab_size,
         state_dim=state_dim,
         action_dim=action_dim,
         d_model=args.d_model,
         diffusion_T=args.diffusion_T
-        #num_text_layers=args.num_text_layers,
-        #num_heads=args.num_heads
     ).to(device)
 
-    # Calculate and print model parameter size
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    # Component breakdown
-    img_encoder_params = sum(p.numel() for p in model.img_encoder.parameters())
-    txt_encoder_params = sum(p.numel() for p in model.txt_encoder.parameters())
-    state_encoder_params = sum(p.numel() for p in model.state_encoder.parameters())
-    fusion_params = sum(p.numel() for p in model.fusion.parameters())
-    diffusion_params = sum(p.numel() for p in model.diffusion_head.parameters())
-    
-    print("=" * 60)
-    print("VLA Model Parameter Breakdown:")
-    print("=" * 60)
-    print(f"Image Encoder:     {img_encoder_params:>10,} parameters")
-    print(f"Text Encoder:      {txt_encoder_params:>10,} parameters")
-    print(f"State Encoder:     {state_encoder_params:>10,} parameters")
-    print(f"Fusion MLP:        {fusion_params:>10,} parameters")
-    print(f"Diffusion Head:    {diffusion_params:>10,} parameters")
-    print("-" * 60)
-    print(f"Total parameters:  {total_params:>10,}")
-    print(f"Trainable params:  {trainable_params:>10,}")
-    print(f"Model size:        {total_params * 4 / (1024**2):>10.2f} MB")
-    print("=" * 60)
-
+    # Setup training pipeline
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     num_epochs = args.epochs
 
-    # Initialize W&B with comprehensive config
+    # Initialize Weights & Biases for experiment tracking
     wandb.init(
         project="mini-vla",
         config={
@@ -132,34 +117,29 @@ def main():
         }
     )
 
-    # Log model architecture
-    wandb.log({
-        "model/total_parameters": total_params,
-        "model/trainable_parameters": trainable_params,
-        "model/size_MB": total_params * 4 / (1024**2),
-        "model/img_encoder_params": img_encoder_params,
-        "model/txt_encoder_params": txt_encoder_params,
-        "model/state_encoder_params": state_encoder_params,
-        "model/fusion_params": fusion_params,
-        "model/diffusion_head_params": diffusion_params,
-    })
-
+    # Initialize training tracking variables
     best_loss = float('inf')
     loss_history = []
 
+    # Main training loop
     for epoch in range(num_epochs):
+
         model.train()
         total_loss = 0.0
         epoch_losses = []
+
+        # Track loss at each diffusion timestep (t=0 to T-1)
         epoch_loss_dict = {f"loss_t{t}": [] for t in range(args.diffusion_T)}
 
         for batch_idx, (img, state, action, text_ids) in enumerate(loader):
+            # Move batch to device
             img = img.to(device)
             state = state.to(device)
             action = action.to(device)
             text_ids = text_ids.to(device)
 
-            # Forward pass
+            # Forward pass: compute diffusion loss (denoising objective)
+            # loss_dict contains per-timestep losses for each diffusion step
             loss, loss_dict = model.loss(img, text_ids, state, action)
 
             # Backward pass
@@ -180,7 +160,6 @@ def main():
                 "train/epoch": epoch + 1,
                 "train/batch": batch_idx,
                 "train/global_step": epoch * len(loader) + batch_idx,
-                "train/learning_rate": optimizer.param_groups[0]['lr'],
             }
 
             # Log per-timestep losses for current batch
@@ -189,13 +168,14 @@ def main():
 
             wandb.log(log_dict)
 
+        # Compute epoch statistics
         avg_loss = total_loss / len(dataset)
         loss_history.append(avg_loss)
         
         # Compute statistics for epoch loss distribution
         epoch_losses_array = np.array(epoch_losses)
         
-        # Average per-timestep losses for epoch
+        # Average per-timestep losses for the epoch (useful for debugging diffusion training)
         avg_per_t_losses = {}
         for t_key in epoch_loss_dict:
             if epoch_loss_dict[t_key]:
@@ -209,7 +189,6 @@ def main():
             "train/epoch_loss_std": float(np.std(epoch_losses)),
             "train/epoch_loss_min": float(np.min(epoch_losses)),
             "train/epoch_loss_max": float(np.max(epoch_losses)),
-            "train/learning_rate": optimizer.param_groups[0]['lr'],
         }
         
         # Add per-timestep averages
@@ -223,7 +202,7 @@ def main():
 
         wandb.log(epoch_log_dict)
 
-        # Save checkpoint
+        # Save checkpoint after each epoch for easy resuming and model selection
         checkpoint_path = args.save_path.replace('.pt', f'_epoch{epoch+1}.pt')
         torch.save(
             {
@@ -231,6 +210,7 @@ def main():
                 "optimizer_state_dict": optimizer.state_dict(),
                 "epoch": epoch + 1,
                 "loss": avg_loss,
+                # Save model config for inference
                 "vocab": dataset.vocab,
                 "state_dim": state_dim,
                 "action_dim": action_dim,

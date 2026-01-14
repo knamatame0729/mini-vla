@@ -194,7 +194,7 @@ def main():
             
             # Log video to W&B
             wandb.log({
-                f"eval/video_ep{ep+1}": wandb.Video(video_path, fps=20, format="mp4"),
+                f"eval/video_ep{ep+1}": wandb.Video(video_path, format="mp4"),
             })
 
     # Log summary statistics
