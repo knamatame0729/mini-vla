@@ -187,18 +187,10 @@ def main():
         epoch_log_dict = {
             "train/epoch_loss": avg_loss,
             "train/epoch_loss_std": float(np.std(epoch_losses)),
-            "train/epoch_loss_min": float(np.min(epoch_losses)),
-            "train/epoch_loss_max": float(np.max(epoch_losses)),
         }
         
         # Add per-timestep averages
         epoch_log_dict.update(avg_per_t_losses)
-
-        # Track best loss
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            epoch_log_dict["train/best_loss"] = best_loss
-            epoch_log_dict["train/best_loss_epoch"] = epoch + 1
 
         wandb.log(epoch_log_dict)
 
@@ -239,7 +231,6 @@ def main():
     # Log final metrics
     wandb.log({
         "train/final_loss": avg_loss,
-        "train/best_loss": best_loss,
         "train/total_epochs": num_epochs,
     })
 

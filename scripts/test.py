@@ -132,7 +132,7 @@ def main():
         env_name=args.env_name,
         seed=args.seed,
         render_mode="rgb_array",
-        camera_name="topview",
+        camera_name="corner3",
     )
 
     print(f"[test] Meta-World MT1 env: {args.env_name}")
@@ -196,20 +196,6 @@ def main():
             wandb.log({
                 f"eval/video_ep{ep+1}": wandb.Video(video_path, format="mp4"),
             })
-
-    # Log summary statistics
-    episode_rewards_array = np.array(episode_rewards)
-    episode_steps_array = np.array(episode_steps)
-
-    wandb.log({
-        "eval/mean_reward": float(np.mean(episode_rewards_array)),
-        "eval/std_reward": float(np.std(episode_rewards_array)),
-        "eval/min_reward": float(np.min(episode_rewards_array)),
-        "eval/max_reward": float(np.max(episode_rewards_array)),
-        "eval/mean_steps": float(np.mean(episode_steps_array)),
-        "eval/std_steps": float(np.std(episode_steps_array)),
-        "eval/total_episodes": args.episodes,
-    })
 
     env.close()
     wandb.finish()

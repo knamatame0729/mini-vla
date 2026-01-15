@@ -60,23 +60,28 @@ class FiLMLayer(nn.Module):
     Feature-wise Linear Modulation (FiLM) layer.
     Learns to modulate features with affine transformations based on conditioning.
     """
-    def __init__(self, cond_dim: int, feat_dim: int, hidden_dim: int = 128):
+    def __init__(self, cond_dim, feat_dim, gamma_shift=1.0):
         super().__init__()
+        self.gamma_shift = gamma_shift
+
         # Generate gamma (multiplicative) and beta (additive) from conditioning
         self.mlp = nn.Sequential(
-            nn.Linear(cond_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, feat_dim * 2),  # *2 for gamma and beta
+            nn.Linear(cond_dim, feat_dim * 2) # * 2 for gamma and beta
         )
     
     def forward(self, x, cond):
         """
-        x: (B, feat_dim) features to be modulated
+        x: (B, feat_dim) predicted action by diffusion model
         cond: (B, cond_dim) conditioning vector
         returns: (B, feat_dim) modulated features
         """
         params = self.mlp(cond)  # (B, feat_dim * 2)
         gamma, beta = torch.split(params, params.size(-1) // 2, dim=-1)  # (B, feat_dim) each
+
+        gamma = gamma + self.gamma_shift
+
+        #gamma = gamma.unsqueeze(-1).unsqueeze(-1)
+        #beta = beta.unsqueeze(-1).unsqueeze(-1)
         
         # FiLM: y = gamma * x + beta
         return gamma * x + beta
@@ -106,13 +111,14 @@ class ActionDenoiseModel(nn.Module):
         )
         
         # FiLM layer to modulate the action output
-        self.film = FiLMLayer(cond_dim=cfg.cond_dim, feat_dim=cfg.action_dim, hidden_dim=hidden_dim)
+        self.film = FiLMLayer(cond_dim=cfg.cond_dim, feat_dim=cfg.action_dim, gamma_shift=1.0)
 
-    def forward(self, x_t, t, cond):
+    def forward(self, x_t, t, cond, text_cond):
         """
         x_t: (B, action_dim) noisy actions at timestep t
         t:   (B,)
         cond: (B, cond_dim) fused VLA token
+        text_cond: (B, cond_dim) encoded text token for FiLM conditioning
         returns: (B, action_dim) predicted noise
         """
         t_emb = self.time_emb(t)  # (B, time_emb_dim)
@@ -123,8 +129,8 @@ class ActionDenoiseModel(nn.Module):
         # MLP to predict noise
         eps_pred = self.net(x)  # (B, action_dim)
         
-        # Apply FiLM modulation to the output
-        eps_pred = self.film(eps_pred, cond)  # (B, action_dim)
+        # Apply FiLM modulation to the output using text condition
+        eps_pred = self.film(eps_pred, text_cond)  # (B, action_dim)
         
         return eps_pred
 
@@ -153,10 +159,11 @@ class DiffusionPolicyHead(nn.Module):
         # x_t = √(ᾱ_t) * x_0 + √(1 - ᾱ_t) * ε
         return torch.sqrt(alpha_bar_t) * x0 + torch.sqrt(1 - alpha_bar_t) * noise
 
-    def loss(self, actions, cond):
+    def loss(self, actions, cond, text_cond):
         """
         actions: (B, action_dim)  ground-truth actions
         cond:    (B, cond_dim)    fused VLA token
+        text_cond: (B, cond_dim)  encoded text token for FiLM conditioning
         """
         B = actions.size(0)
         device = actions.device
@@ -171,7 +178,7 @@ class DiffusionPolicyHead(nn.Module):
         x_t = self.q_sample(actions, t, noise)      # noisy actions at timestep t
 
         # Predict the noise
-        eps_pred = self.denoise_model(x_t, t, cond)
+        eps_pred = self.denoise_model(x_t, t, cond, text_cond)
 
         # Main Loss
         main_loss = F.mse_loss(eps_pred, noise)
@@ -190,9 +197,10 @@ class DiffusionPolicyHead(nn.Module):
         return main_loss, loss_dict
 
     @torch.no_grad()
-    def sample(self, cond, n_samples=None):
+    def sample(self, cond, text_cond, n_samples=None):
         """
-        cond: (B, cond_dim) or (1, cond_dim)
+        cond: (B, cond_dim) or (1, cond_dim) fused VLA token
+        text_cond: (B, cond_dim) encoded text token for FiLM conditioning
         returns: (B, action_dim) sampled actions x_0
         """
         self.eval()
@@ -201,6 +209,7 @@ class DiffusionPolicyHead(nn.Module):
         else:
             B = n_samples
             cond = cond.expand(B, -1)
+            text_cond = text_cond.expand(B, -1)
 
         # Start from pure noise (action_dim)
         x_t = torch.randn(B, self.cfg.action_dim, device=cond.device)
@@ -212,7 +221,7 @@ class DiffusionPolicyHead(nn.Module):
             t = torch.full((B,), t_step, device=cond.device, dtype=torch.long)
 
             # Predict noise
-            eps_pred = self.denoise_model(x_t, t, cond)
+            eps_pred = self.denoise_model(x_t, t, cond, text_cond)
 
             # Get parameters for current timestep
             beta_t = self.betas[t_step]

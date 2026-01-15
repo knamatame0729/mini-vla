@@ -25,13 +25,12 @@ def visualize_film_effects():
     # Configuration
     cond_dim = 128      # Conditioning vector dimension (fused VLA token)
     feat_dim = 4        # Action dimension (4D for MetaWorld)
-    hidden_dim = 128
     batch_size = 1
     
     device = torch.device('cpu')
     
     # Create FiLM layer
-    film_layer = FiLMLayer(cond_dim=cond_dim, feat_dim=feat_dim, hidden_dim=hidden_dim).to(device)
+    film_layer = FiLMLayer(cond_dim=cond_dim, feat_dim=feat_dim).to(device)
     
     # Create sample conditioning vectors (fused VLA tokens)
     cond1 = torch.randn(batch_size, cond_dim, device=device)  # Random conditioning 1
@@ -49,7 +48,6 @@ def visualize_film_effects():
     print(f"Configuration:")
     print(f"  - Action dimension (feat_dim):     {feat_dim}")
     print(f"  - Conditioning dimension:          {cond_dim}")
-    print(f"  - Hidden layer dimension:          {hidden_dim}")
     print()
     
     print(f"Original Action Prediction (before FiLM):")

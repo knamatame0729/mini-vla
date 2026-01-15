@@ -12,8 +12,6 @@ class VLADiffusionPolicy(nn.Module):
                  d_model=128, diffusion_T=16):
         super().__init__()
         self.img_encoder = ImageEncoderTinyCNN(d_model=d_model)
-        #self.txt_encoder = TextEncoderTransformer(vocab_size=vocab_size, d_word=64, d_model=d_model, 
-        #                                          num_layers=num_text_layers, num_heads=num_heads)
         self.txt_encoder = TextEncoderTinyGRU(vocab_size=vocab_size, d_word=64, d_model=d_model)
         self.state_encoder = StateEncoderMLP(state_dim=state_dim, d_model=d_model)
         self.fusion = FusionMLP(d_model=d_model)
@@ -30,14 +28,14 @@ class VLADiffusionPolicy(nn.Module):
         txt_token = self.txt_encoder(text_tokens)  # (B, d_model)
         state_token = self.state_encoder(state)  # (B, d_model)
         fused_context = self.fusion(img_token, txt_token, state_token)
-        return fused_context
+        return fused_context, txt_token
 
     def loss(self, image, text_tokens, state, actions):
         """
         Compute the loss of the diffusion policy head given the image, text tokens, state, and actions.
         """
-        cond = self.encode_obs(image, text_tokens, state)
-        return self.diffusion_head.loss(actions, cond)
+        fused_context, txt_token = self.encode_obs(image, text_tokens, state)
+        return self.diffusion_head.loss(actions, fused_context, txt_token)
 
     def act(self, image, text_tokens, state):
         """
@@ -46,6 +44,6 @@ class VLADiffusionPolicy(nn.Module):
         state: (B, state_dim)
         returns: (B, action_dim)
         """
-        cond = self.encode_obs(image, text_tokens, state)
-        actions = self.diffusion_head.sample(cond)
+        fused_context, txt_token = self.encode_obs(image, text_tokens, state)
+        actions = self.diffusion_head.sample(fused_context, txt_token)
         return actions
