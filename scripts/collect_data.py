@@ -6,6 +6,7 @@ import time
 import numpy as np
 import gymnasium as gym
 import metaworld
+from PIL import Image
 from metaworld.policies import ENV_POLICY_MAP
 from utils.tokenizer import SimpleTokenizer
 
@@ -22,6 +23,8 @@ def parse_args():
                         help="Optional sleep between steps for visualization (seconds)")
     parser.add_argument("--instructions", type=str, nargs="+", default=["push the object to the goal", "push the object to the right"],
                         help="Fixed instructions for all episodes")
+    parser.add_argument("--img-size", type=int, default=64,
+                        help="Resize images to this size (default: 64x64)")
     return parser.parse_args()
 
 
@@ -62,9 +65,13 @@ def collect_task_data(env_name, instruction, args):
 
             # log current transition
             img = env.render() # (H, W, 3) uint8
+            # Resize image to reduce memory usage
+            img = Image.fromarray(img)
+            img = img.resize((args.img_size, args.img_size), Image.BILINEAR)
+            img = np.array(img, dtype=np.uint8)
             state = extract_state(obs) # (state_dim,)
 
-            images.append(img.copy())
+            images.append(img)
             states.append(state.copy())
             actions.append(np.asarray(action, dtype=np.float32).copy())
             texts.append(instruction)
@@ -94,6 +101,7 @@ def main():
     all_actions = []
     all_texts = []
     all_task_ids = []
+    all_task_ids = []
 
     for env_name, instruction in zip(args.env_names, args.instructions):
 
@@ -121,17 +129,25 @@ def main():
 
     np.savez_compressed(
         args.output_path,
-        images=all_images,
-        states=all_states,
-        actions=all_actions,
+        images=images,
+        states=states,
+        actions=actions,
         text_ids=text_ids,
         vocab=tokenizer.vocab,
+        task_ids=np.array(all_task_ids),
     )
 
+    data = np.load('data/metaworld_push_and_right_bc.npz')
+    print("Images:", data['images'].shape)
+    print("States:", data['states'].shape) 
+    print("Actions:", data['actions'].shape)
+    print("Text IDs:", data['text_ids'].shape)
+    print("Vocab size:", len(data['vocab'].item()))
+
     print("Saved Meta-World push dataset to", args.output_path)
-    print("  images:", all_images.shape)
-    print("  states:", all_states.shape)
-    print("  actions:", all_actions.shape)
+    print("  images:", images.shape)
+    print("  states:", states.shape)
+    print("  actions:", actions.shape)
     print("  text_ids:", text_ids.shape)
 
 

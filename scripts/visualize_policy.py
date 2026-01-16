@@ -25,7 +25,7 @@ def main():
         "Meta-World/MT1",
         env_name=args.env_name,
         seed=args.seed,
-        render_mode="human",
+        render_mode="rgb_array",
     )
     
     # Get expert policy
