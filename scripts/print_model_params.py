@@ -48,6 +48,7 @@ def print_component_summary(model):
         ("Text Encoder", model.txt_encoder),
         ("State Encoder", model.state_encoder),
         ("Fusion MLP", model.fusion),
+        ("FiLM Layer", model.film),
         ("Diffusion Head", model.diffusion_head),
     ]
     
