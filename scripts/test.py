@@ -9,6 +9,7 @@ import wandb
 
 from envs.metaworld_env import MetaWorldMT1Wrapper
 from models.vla_diffusion_policy import VLADiffusionPolicy
+from models.llm_film import LLMFiLMGenerator, LLMFiLMWrapper
 from utils.tokenizer import SimpleTokenizer
 
 
@@ -74,7 +75,24 @@ def parse_args():
         default="videos",
         help="Directory to save videos (if --save-video is set)",
     )
-    
+    parser.add_argument(
+        "--use-llm-film",
+        action="store_true",
+        help="Use LLM to generate FiLM parameters instead of learned MLP",
+    )
+    parser.add_argument(
+        "--llm-provider",
+        type=str,
+        default="openai",
+        choices=["openai", "anthropic"],
+        help="LLM provider for FiLM parameter generation",
+    )
+    parser.add_argument(
+        "--llm-model",
+        type=str,
+        default="gpt-4o-mini",
+        help="LLM model name (e.g., gpt-4o-mini, claude-3-haiku-20240307)",
+    )
 
     return parser.parse_args()
 
@@ -140,20 +158,27 @@ def run_episode_with_diffusion(model, env, text_ids, device, max_steps, save_vid
     return ep_reward, step, frames, last_action, img, state
 
 
-def run_episode_with_film(model, env, new_text_ids, previous_action, device, max_steps, img_init, state_init):
+def run_episode_with_llm_film(model, env, llm_film_gen, original_instruction, new_instruction, previous_action, device, max_steps, img_init, state_init):
     """
-    Run an episode using FiLM to modulate actions based on a new prompt.
+    Run an episode using LLM-generated FiLM parameters to modulate actions.
+    
+    The LLM understands:
+    - The original instruction the VLA was trained on
+    - The action values from VLA
+    - The new instruction to adapt to
     """
     img, state = img_init, state_init
     step = 0
     ep_reward = 0.0
     frames = [img.copy()]
 
-    # Generate new gamma and beta from the new text prompt
+    # Generate FiLM parameters using LLM
     with torch.no_grad():
-        new_action, gamma, beta = model.filmed_action(previous_action, new_text_ids)
+        new_action, gamma, beta = llm_film_gen(action=previous_action, original_instruction=original_instruction, new_instruction=new_instruction)
     
-    print(f"\n======= Generated FiLM parameters ========")
+    print(f"\n======= LLM-Generated FiLM parameters ========")
+    print(f"  Original instruction: '{original_instruction}'")
+    print(f"  New instruction: '{new_instruction}'")
     print(f"  gamma: {gamma.squeeze().cpu().numpy()}")
     print(f"  beta: {beta.squeeze().cpu().numpy()}")
     print(f"  Previous action: {previous_action.squeeze().cpu().numpy()}")
@@ -171,10 +196,15 @@ def run_episode_with_film(model, env, new_text_ids, previous_action, device, max
         frames.append(img.copy())
 
         if not done and step < max_steps:
+            # Re-apply LLM FiLM for next action
             with torch.no_grad():
-                current_action, _, _ = model.filmed_action(current_action, new_text_ids)
+                current_action, _, _ = llm_film_gen(
+                    action=current_action,
+                    original_instruction=original_instruction,
+                    new_instruction=new_instruction,
+                    use_llm=True,
+                )
 
-    # Return final state info for continuation
     return ep_reward, step, frames, gamma, beta, current_action, img, state
 
 
@@ -207,6 +237,16 @@ def main():
     # encode film instruction
     film_tokens = tokenizer.encode(args.film_instruction)
     film_text_ids = torch.tensor(film_tokens, dtype=torch.long).unsqueeze(0).to(device)
+    
+    # Initialize LLM-FiLM generator if requested
+    llm_film_gen = None
+    if args.use_llm_film:
+        print(f"[test] Using LLM-FiLM with {args.llm_provider}/{args.llm_model}")
+        llm_film_gen = LLMFiLMGenerator(
+            action_dim=4,  # Meta-World action dim
+            llm_provider=args.llm_provider,
+            model_name=args.llm_model,
+        )
 
     # environment
     env = MetaWorldMT1Wrapper(
@@ -224,7 +264,11 @@ def main():
 
     # Run evaluation episodes
     for ep in range(args.episodes):
-        run_diffusion_then_film_mode(args, model, tokenizer, env, diff_text_ids, film_text_ids, device, ep)
+        run_diffusion_then_film_mode(
+            args, model, tokenizer, env, 
+            diff_text_ids, film_text_ids, device, ep,
+            llm_film_gen=llm_film_gen
+        )
         
     env.close()
     wandb.finish()
@@ -232,7 +276,7 @@ def main():
 
 
 
-def run_diffusion_then_film_mode(args, model, tokenizer, env, diff_text_ids, film_text_ids, device, episode_num):
+def run_diffusion_then_film_mode(args, model, tokenizer, env, diff_text_ids, film_text_ids, device, episode_num, llm_film_gen=None):
     
     print("\n" + "="*60)
     print(f"[Episode {episode_num}]: Starting new test episode with diffusion")
@@ -261,14 +305,19 @@ def run_diffusion_then_film_mode(args, model, tokenizer, env, diff_text_ids, fil
     print(f"\n[FiLM] Modulate with new prompt: '{args.film_instruction}'")
     
     # =================== FiLM Episode ===================
-    ep_reward, step, frames, gamma, beta, current_action, current_img, current_state = run_episode_with_film(
-        model, env,
-        film_text_ids, 
-        last_action, device, 
-        args.max_steps, 
-        last_img, 
-        last_state
-    )
+    if llm_film_gen is not None:
+        # Use LLM-generated FiLM parameters
+        print("[FiLM] Using LLM to generate gamma/beta...")
+        ep_reward, step, frames, gamma, beta, current_action, current_img, current_state = run_episode_with_llm_film(
+            model, env, llm_film_gen,
+            original_instruction=args.instruction,
+            new_instruction=args.film_instruction,
+            previous_action=last_action,
+            device=device,
+            max_steps=args.max_steps,
+            img_init=last_img,
+            state_init=last_state,
+        )
     
     print(f"\n[FiLM]: reward={ep_reward:.3f}, steps={step}")
 

@@ -6,8 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .film_gen import FiLMGenerator
-
 
 @dataclass
 class DiffusionConfig:
@@ -80,16 +78,12 @@ class ActionDenoiseModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, cfg.action_dim),
         )
-        
-        # FiLM layer to modulate the action output
-        self.film = FiLMGenerator(cond_dim=cfg.cond_dim, feat_dim=cfg.action_dim, gamma_shift=1.0)
 
     def forward(self, x_t, t, cond):
         """
         x_t: (B, action_dim) noisy actions at timestep t
         t:   (B,)
         cond: (B, cond_dim) fused VLA token
-        text_cond: (B, cond_dim) encoded text token for FiLM conditioning
         returns: (B, action_dim) predicted noise
         """
         t_emb = self.time_emb(t)  # (B, time_emb_dim)
@@ -99,9 +93,6 @@ class ActionDenoiseModel(nn.Module):
 
         # MLP to predict noise
         eps_pred = self.net(x)  # (B, action_dim)
-        
-        # Apply FiLM modulation to the output
-        eps_pred = self.film(eps_pred, cond)  # (B, action_dim)
         
         return eps_pred
 

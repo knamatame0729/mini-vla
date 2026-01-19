@@ -82,7 +82,6 @@ def main():
 
     # Initialize VLA model with diffusion policy head
     # Architecture: Image Encoder + Text Encoder + State Encoder + Fusion MLP + Diffusion Head
-    # The diffusion head includes a FiLM layer for conditioning action generation
     model = VLADiffusionPolicy(
         vocab_size=vocab_size,
         state_dim=state_dim,
