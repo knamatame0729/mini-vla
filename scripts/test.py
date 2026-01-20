@@ -75,18 +75,7 @@ def parse_args():
         default="videos",
         help="Directory to save videos (if --save-video is set)",
     )
-    parser.add_argument(
-        "--use-llm-film",
-        action="store_true",
-        help="Use LLM to generate FiLM parameters instead of learned MLP",
-    )
-    parser.add_argument(
-        "--llm-provider",
-        type=str,
-        default="openai",
-        choices=["openai", "anthropic"],
-        help="LLM provider for FiLM parameter generation",
-    )
+    
     parser.add_argument(
         "--llm-model",
         type=str,
@@ -240,13 +229,9 @@ def main():
     
     # Initialize LLM-FiLM generator if requested
     llm_film_gen = None
-    if args.use_llm_film:
-        print(f"[test] Using LLM-FiLM with {args.llm_provider}/{args.llm_model}")
-        llm_film_gen = LLMFiLMGenerator(
-            action_dim=4,  # Meta-World action dim
-            llm_provider=args.llm_provider,
-            model_name=args.llm_model,
-        )
+    print(f"[test] Using LLM-FiLM with gemini/{args.llm_model}")
+
+    llm_film_gen = LLMFiLMGenerator(action_dim=4, model_name=args.llm_model)
 
     # environment
     env = MetaWorldMT1Wrapper(
@@ -264,11 +249,7 @@ def main():
 
     # Run evaluation episodes
     for ep in range(args.episodes):
-        run_diffusion_then_film_mode(
-            args, model, tokenizer, env, 
-            diff_text_ids, film_text_ids, device, ep,
-            llm_film_gen=llm_film_gen
-        )
+        run_diffusion_then_film_mode(args, model, tokenizer, env, diff_text_ids, film_text_ids, device, ep, llm_film_gen=llm_film_gen)
         
     env.close()
     wandb.finish()

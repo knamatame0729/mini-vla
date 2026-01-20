@@ -1,8 +1,4 @@
-"""LLM-based FiLM parameter generator.
-
-Uses an LLM to understand the original instruction and VLA actions,
-then generates gamma and beta parameters to transform actions based on a new instruction.
-"""
+"""LLM-based FiLM parameter generator for action modulation."""
 
 import torch
 import torch.nn as nn
@@ -14,43 +10,36 @@ import re
 
 class LLMFiLMGenerator(nn.Module):
     """
-    LLM-based FiLM generator that uses language models to generate
-    gamma and beta parameters for action modulation.
+    LLM-based FiLM generator that uses language models to generate gamma and beta parameters for action modulation.
     
     The LLM receives:
     - Original instruction (e.g., "push object to the goal")
     - Current action values from VLA (without FiLM)
     - New instruction (e.g., "push object to the right")
-    
-    And outputs gamma and beta to transform the action.
     """
     
     def __init__(
         self, 
         action_dim: int = 4,
-        llm_provider: str = "openai",
-        model_name: str = "gpt-4o-mini",
+        model_name: str = "gemini-3-flash-preview",
         gamma_shift: float = 1.0,
         cache_responses: bool = True,
     ):
         super().__init__()
         self.action_dim = action_dim
-        self.llm_provider = llm_provider
         self.model_name = model_name
         self.gamma_shift = gamma_shift
         self.cache_responses = cache_responses
         self._cache = {}
         
     def _get_llm_client(self):
-        """Get the appropriate LLM client based on provider."""
-        if self.llm_provider == "openai":
-            try:
-                from openai import OpenAI
-                return OpenAI()
-            except ImportError:
-                print("[LLMFiLM] OpenAI not installed.")
-                return None
-        else:
+        """Get the Gemini LLM client."""
+        try:
+            from google import genai
+            client = genai.Client(api_key='GEMINI_API_KEY')
+            return client
+        except ImportError:
+            print("[LLMFiLM] google-genai not installed.")
             return None
     
     def _build_prompt(self, original_instruction: str, action: np.ndarray, new_instruction: str) -> str:
@@ -112,7 +101,7 @@ JSON response:"""
         if client is None:
             return ""
         
-        response = client.chat.completions.create(
+        response = client.model.generate_content(
             model=self.model_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
@@ -134,43 +123,32 @@ JSON response:"""
             beta: (B, action_dim) additive offsets
         """
         device = action.device
-        B = action.size(0)
         
-        # For now, process batch element by element (could batch LLM calls)
-        gammas = []
-        betas = []
-        
-        for i in range(B):
-            action_np = action[i].detach().cpu().numpy()
-            
-            # Check cache
-            # If cache_key is exists in cache, use cached response
+        # Check cache
+        # If cache_key is exists in cache, use cached response
 
-            cache_key = (original_instruction, tuple(action_np.round(3)), new_instruction)
+        cache_key = (original_instruction, tuple(action_np.round(3)), new_instruction)
 
-            if self.cache_responses and cache_key in self._cache:
-                gamma, beta = self._cache[cache_key]
-            else:
-                # Build prompt and call LLM
-                prompt = self._build_prompt(original_instruction, action_np, new_instruction)
-                
-                if self.llm_provider == "openai":
-                    response = self._call_openai(prompt)
-                else:
-                    response = ""
-                
-                gamma, beta = self._parse_llm_response(response)
-                
-                if self.cache_responses:
-                    self._cache[cache_key] = (gamma, beta)
+        if self.cache_responses and cache_key in self._cache:
+            gamma, beta = self._cache[cache_key]
+
+            print(f"Cache hit for key: {cache_key}")
+        else:
+            # Build prompt and call LLM
+            prompt = self._build_prompt(original_instruction, action_np, new_instruction)
             
-            gammas.append(gamma)
-            betas.append(beta)
+            response = self._call_openai(prompt)
+            
+            gamma, beta = self._parse_llm_response(response)
+            
+            if self.cache_responses:
+                self._cache[cache_key] = (gamma, beta)
         
         gamma_t = torch.tensor(np.stack(gammas), dtype=torch.float32, device=device)
         beta_t = torch.tensor(np.stack(betas), dtype=torch.float32, device=device)
 
         print(f"[Gamma shape]: {gamma_t.shape}, [Beta shape]: {beta_t.shape}")
+        print(f"[Gamma]: {gamma_t}, [Beta]: {beta_t}")
         
         return gamma_t, beta_t
     
@@ -188,82 +166,3 @@ JSON response:"""
     def clear_cache(self):
         """Clear the response cache."""
         self._cache = {}
-
-
-class LLMFiLMWrapper:
-    """
-    High-level wrapper for using LLM-FiLM with VLA models.
-    
-    Example usage:
-        wrapper = LLMFiLMWrapper(vla_model, llm_provider="openai")
-        
-        # Get base action from VLA
-        action = vla_model.act(image, text_ids, state)
-        
-        # Modify action with new instruction via LLM
-        new_action = wrapper.modify_action(
-            action=action,
-            original_instruction="push object to the goal",
-            new_instruction="push object to the right"
-        )
-    """
-    
-    def __init__(
-        self,
-        vla_model: nn.Module,
-        action_dim: int = 4,
-        llm_provider: str = "openai",
-        model_name: str = "gpt-4o-mini",
-    ):
-        self.vla = vla_model
-        self.llm_film = LLMFiLMGenerator(
-            action_dim=action_dim,
-            llm_provider=llm_provider,
-            model_name=model_name,
-        )
-    
-    def get_base_action(
-        self,
-        image: torch.Tensor,
-        text_tokens: torch.Tensor,
-        state: torch.Tensor,
-    ) -> torch.Tensor:
-        """Get action from VLA without FiLM modification."""
-        with torch.no_grad():
-            return self.vla.act(image, text_tokens, state)
-    
-    def modify_action(
-        self,
-        action: torch.Tensor,
-        original_instruction: str,
-        new_instruction: str,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Modify action using LLM-generated FiLM parameters.
-        
-        Returns:
-            new_action, gamma, beta
-        """
-        return self.llm_film(
-            action=action,
-            original_instruction=original_instruction,
-            new_instruction=new_instruction,
-            use_llm=True,
-        )
-    
-    def act_with_new_instruction(
-        self,
-        image: torch.Tensor,
-        original_text_tokens: torch.Tensor,
-        state: torch.Tensor,
-        original_instruction: str,
-        new_instruction: str,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Full pipeline: get VLA action, then modify with LLM-FiLM.
-        
-        Returns:
-            new_action, gamma, beta
-        """
-        base_action = self.get_base_action(image, original_text_tokens, state)
-        return self.modify_action(base_action, original_instruction, new_instruction)
