@@ -2,6 +2,7 @@
 
 import os
 import argparse
+import time
 import numpy as np
 import torch
 import imageio.v2 as imageio
@@ -154,7 +155,12 @@ def run_episode_with_diffusion(model, env, text_ids, device, max_steps, episode_
 
         # Inference action with diffusion
         with torch.no_grad():
+            torch.cuda.synchronize()
+            start_time = time.time()
             action_t = model.act(img_t, text_ids, state_t)
+            torch.cuda.synchronize()
+            end_time = time.time()
+            print(f"Inference time: {end_time - start_time:.4f} seconds")
         
         last_action = action_t.clone()
         action_np = action_t.squeeze(0).cpu().numpy()

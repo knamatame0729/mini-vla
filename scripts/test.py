@@ -2,6 +2,7 @@
 
 import os
 import argparse
+import time
 import numpy as np
 import torch
 import imageio.v2 as imageio
@@ -9,7 +10,7 @@ import wandb
 
 from envs.metaworld_env import MetaWorldMT1Wrapper
 from models.vla_diffusion_policy import VLADiffusionPolicy
-from models.llm_film import LLMFiLMGenerator, LLMFiLMWrapper
+from models.llm_film import LLMFiLMGenerator
 from utils.tokenizer import SimpleTokenizer
 
 
@@ -19,13 +20,13 @@ def parse_args():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="checkpoints/vla_diffusion_metaworld_push.pt",
+        default="checkpoints/model.pt",
         help="Path to trained VLA diffusion checkpoint",
     )
     parser.add_argument(
         "--env-name",
         type=str,
-        default="push-v3",
+        default="pick-place-v3",
         help="Meta-World MT1 task name, e.g. push-v3, reach-v3, pick-place-v3",
     )
     parser.add_argument(
@@ -37,7 +38,7 @@ def parse_args():
     parser.add_argument(
         "--episodes",
         type=int,
-        default=5,
+        default=1,
         help="Number of evaluation episodes",
     )
     parser.add_argument(
@@ -55,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "--film-instruction",
         type=str,
-        default="push object to the left side of the table",
+        default="push object to the right",
         help="Fixed language instruction for FiLM re-conditioning",
     )
     parser.add_argument(
@@ -75,12 +76,11 @@ def parse_args():
         default="videos",
         help="Directory to save videos (if --save-video is set)",
     )
-    
+
     parser.add_argument(
         "--llm-model",
         type=str,
-        default="gpt-4o-mini",
-        help="LLM model name (e.g., gpt-4o-mini, claude-3-haiku-20240307)",
+        default="gemini-1.5-flash",
     )
 
     return parser.parse_args()
@@ -134,7 +134,14 @@ def run_episode_with_diffusion(model, env, text_ids, device, max_steps, save_vid
 
         # Inference action with diffusion
         with torch.no_grad():
+            torch.cuda.synchronize()
+            start_time = time.time()
+
             action_t = model.act(img_t, text_ids, state_t)
+            
+            torch.cuda.synchronize()
+            end_time = time.time()
+            print(f"Inference time: {end_time - start_time:.4f} seconds")
         
         last_action = action_t.clone()
         action_np = action_t.squeeze(0).cpu().numpy()
@@ -184,15 +191,6 @@ def run_episode_with_llm_film(model, env, llm_film_gen, original_instruction, ne
         step += 1
         frames.append(img.copy())
 
-        if not done and step < max_steps:
-            # Re-apply LLM FiLM for next action
-            with torch.no_grad():
-                current_action, _, _ = llm_film_gen(
-                    action=current_action,
-                    original_instruction=original_instruction,
-                    new_instruction=new_instruction,
-                )
-
     return ep_reward, step, frames, gamma, beta, current_action, img, state
 
 
@@ -237,7 +235,7 @@ def main():
         env_name=args.env_name,
         seed=args.seed,
         render_mode="rgb_array",
-        camera_name="corner1",
+        camera_name="corner2",
     )
 
     print(f"[test] Meta-World MT1 env: {args.env_name}")
@@ -274,7 +272,8 @@ def run_diffusion_then_film_mode(args, model, tokenizer, env, diff_text_ids, fil
         video_path = os.path.join(args.video_dir, f"{args.env_name}_episode{episode_num}_diffusion.mp4")
         with imageio.get_writer(video_path) as writer:
             for f in frames:
-                writer.append_data(f)
+                f_rot=np.rot90(f, 2)
+                writer.append_data(f_rot)
 
         wandb.log({f"eval/video_diffusion_episode{episode_num}": wandb.Video(video_path, format="mp4")})
 
@@ -306,7 +305,8 @@ def run_diffusion_then_film_mode(args, model, tokenizer, env, diff_text_ids, fil
         video_path = os.path.join(args.video_dir, f"{args.env_name}_film{episode_num:03d}.mp4")
         with imageio.get_writer(video_path) as writer:
             for f in frames:
-                writer.append_data(f)
+                f_rot=np.rot90(f, 2)
+                writer.append_data(f_rot)
 
         wandb.log({f"eval/video_film{episode_num}": wandb.Video(video_path, format="mp4")})
 

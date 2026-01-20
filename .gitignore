@@ -6,3 +6,4 @@ videos*/
 checkpoints/
 wandb/
 .vscode*/
+llm_film_logs*/
