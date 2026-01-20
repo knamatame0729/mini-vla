@@ -191,7 +191,6 @@ def run_episode_with_llm_film(model, env, llm_film_gen, original_instruction, ne
                     action=current_action,
                     original_instruction=original_instruction,
                     new_instruction=new_instruction,
-                    use_llm=True,
                 )
 
     return ep_reward, step, frames, gamma, beta, current_action, img, state

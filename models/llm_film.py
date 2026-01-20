@@ -6,6 +6,7 @@ import numpy as np
 from typing import Optional, Tuple
 import json
 import re
+import os
 
 
 class LLMFiLMGenerator(nn.Module):
@@ -36,7 +37,7 @@ class LLMFiLMGenerator(nn.Module):
         """Get the Gemini LLM client."""
         try:
             from google import genai
-            client = genai.Client(api_key='GEMINI_API_KEY')
+            client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
             return client
         except ImportError:
             print("[LLMFiLM] google-genai not installed.")
@@ -123,6 +124,7 @@ JSON response:"""
             beta: (B, action_dim) additive offsets
         """
         device = action.device
+        action_np = action.squeeze(0).cpu().numpy()
         
         # Check cache
         # If cache_key is exists in cache, use cached response
@@ -144,8 +146,8 @@ JSON response:"""
             if self.cache_responses:
                 self._cache[cache_key] = (gamma, beta)
         
-        gamma_t = torch.tensor(np.stack(gammas), dtype=torch.float32, device=device)
-        beta_t = torch.tensor(np.stack(betas), dtype=torch.float32, device=device)
+        gamma_t = torch.tensor(gamma, dtype=torch.float32, device=device)
+        beta_t = torch.tensor(beta, dtype=torch.float32, device=device)
 
         print(f"[Gamma shape]: {gamma_t.shape}, [Beta shape]: {beta_t.shape}")
         print(f"[Gamma]: {gamma_t}, [Beta]: {beta_t}")
@@ -156,7 +158,7 @@ JSON response:"""
         """
         Generate FiLM parameters and apply to action.
         """
-        gamma, beta = self.generate_film_params_llm( original_instruction, action, new_instruction)
+        gamma, beta = self.generate_film_params_llm(original_instruction, action, new_instruction)
         
         # Apply FiLM transformation
         new_action = gamma * action + beta
